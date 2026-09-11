@@ -31,13 +31,20 @@ import type { SubmitTextOptions } from './utils'
 
 import { uploadComposerAttachment, usePromptActions } from '.'
 
+// The real payload->timeout formula is covered in hermes.test.ts; here it
+// returns a sentinel so the wiring assertions read unambiguously. Inlined
+// rather than referencing the const below, because vi.mock factories are
+// hoisted above it.
 vi.mock('@/hermes', () => ({
+  attachUploadRequestTimeoutMs: vi.fn(() => 900_000),
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   getSession: vi.fn(),
   PROMPT_SUBMIT_REQUEST_TIMEOUT_MS: 1_800_000,
   setApiRequestProfile: vi.fn(),
   transcribeAudio: vi.fn()
 }))
+
+const ATTACH_UPLOAD_TIMEOUT_SENTINEL = 900_000
 
 // The active id the desktop holds is the *runtime* session id from
 // session.create — deliberately distinct from the stored DB id here, because
@@ -2485,6 +2492,88 @@ describe('usePromptActions file attachment sync', () => {
     })
   })
 
+  it('gives a byte-upload attach an extended timeout instead of the 30s default', async () => {
+    // A remote attach ships the whole file as base64 in one JSON-RPC frame. On
+    // the generic 30s default that request expired mid-transfer for anything
+    // past a few MB ("request timed out after 30s: file.attach"), so the
+    // byte-upload path must opt into a payload-scaled budget.
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:text/plain;base64,aGVsbG8=') }
+    })
+
+    const timeouts: (number | undefined)[] = []
+
+    const requestGateway = vi.fn(
+      async (method: string, _params?: Record<string, unknown>, timeoutMs?: number) => {
+        if (method === 'file.attach') {
+          timeouts.push(timeoutMs)
+
+          return {
+            attached: true,
+            path: '/remote/work/.hermes/desktop-attachments/report.txt',
+            ref_text: '@file:.hermes/desktop-attachments/report.txt',
+            uploaded: true
+          } as never
+        }
+
+        return {} as never
+      }
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('convert this to epub', { attachments: [fileAttachment()] })
+
+    expect(timeouts).toEqual([ATTACH_UPLOAD_TIMEOUT_SENTINEL])
+  })
+
+  it('leaves a path-only attach on the default timeout', async () => {
+    // No bytes cross the wire when the gateway can read the path itself, so the
+    // extended budget would only delay surfacing a genuinely stuck gateway.
+    $connection.set({ mode: 'local' } as never)
+    $currentCwd.set('/Users/alice')
+    // Explicit: a container backend forces a byte upload regardless of path,
+    // and this store carries across tests in this file.
+    $terminalBackend.set('')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:text/plain;base64,aGVsbG8=') }
+    })
+
+    const timeouts: (number | undefined)[] = []
+
+    const requestGateway = vi.fn(
+      async (method: string, params?: Record<string, unknown>, timeoutMs?: number) => {
+        if (method === 'file.attach') {
+          expect(params?.data_url).toBeUndefined()
+          timeouts.push(timeoutMs)
+
+          return {
+            attached: true,
+            ref_text: '@file:Downloads/report.txt',
+            uploaded: false
+          } as never
+        }
+
+        return {} as never
+      }
+    )
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('convert this to epub', { attachments: [fileAttachment()] })
+
+    expect(timeouts).toEqual([undefined])
+  })
+
   it('uploads Windows file bytes when local mode fronts a POSIX WSL/Docker backend', async () => {
     $connection.set({ mode: 'local' } as never)
     $currentCwd.set('/root')
@@ -2570,11 +2659,15 @@ describe('usePromptActions file attachment sync', () => {
     )
 
     expect(readFileDataUrl).toHaveBeenCalledWith('C:\\Users\\alice\\Pictures\\photo.jpg')
-    expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', {
-      content_base64: 'aGVsbG8=',
-      filename: 'photo.jpg',
-      session_id: RUNTIME_SESSION_ID
-    })
+    expect(requestGateway).toHaveBeenCalledWith(
+      'image.attach_bytes',
+      {
+        content_base64: 'aGVsbG8=',
+        filename: 'photo.jpg',
+        session_id: RUNTIME_SESSION_ID
+      },
+      ATTACH_UPLOAD_TIMEOUT_SENTINEL
+    )
     expect(requestGateway).not.toHaveBeenCalledWith('image.attach', expect.anything())
     expect(uploaded.path).toBe('/root/tmp/photo.jpg')
   })

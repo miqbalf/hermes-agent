@@ -2,7 +2,7 @@ import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
-import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS, transcribeAudio } from '@/hermes'
+import { attachUploadRequestTimeoutMs, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS, transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
@@ -153,11 +153,15 @@ export async function uploadComposerAttachment(
   const stageForSession = async (liveSessionId: string): Promise<ComposerAttachment> => {
     if (attachment.kind === 'image') {
       const result = imagePayload
-        ? await requestGateway<ImageAttachResponse>('image.attach_bytes', {
-            session_id: liveSessionId,
-            content_base64: imagePayload.contentBase64,
-            filename: imagePayload.filename
-          })
+        ? await requestGateway<ImageAttachResponse>(
+            'image.attach_bytes',
+            {
+              session_id: liveSessionId,
+              content_base64: imagePayload.contentBase64,
+              filename: imagePayload.filename
+            },
+            attachUploadRequestTimeoutMs(imagePayload.contentBase64)
+          )
         : await requestGateway<ImageAttachResponse>('image.attach', {
             path,
             session_id: liveSessionId
@@ -178,12 +182,18 @@ export async function uploadComposerAttachment(
       }
     }
 
-    const result = await requestGateway<FileAttachResponse>('file.attach', {
-      name: label,
-      path,
-      session_id: liveSessionId,
-      ...(fileDataUrl ? { data_url: fileDataUrl } : {})
-    })
+    const result = await requestGateway<FileAttachResponse>(
+      'file.attach',
+      {
+        name: label,
+        path,
+        session_id: liveSessionId,
+        ...(fileDataUrl ? { data_url: fileDataUrl } : {})
+      },
+      // Only the byte-upload path needs the extended budget; a path-only
+      // attach is a cheap gateway-side copy and keeps the 30s default.
+      fileDataUrl ? attachUploadRequestTimeoutMs(fileDataUrl) : undefined
+    )
 
     if (!result.attached || !result.ref_text) {
       throw new Error(result.message || `Could not attach ${label}`)

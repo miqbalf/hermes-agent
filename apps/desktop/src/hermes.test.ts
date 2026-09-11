@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  ATTACH_UPLOAD_MAX_REQUEST_TIMEOUT_MS,
+  ATTACH_UPLOAD_MIN_REQUEST_TIMEOUT_MS,
+  attachUploadRequestTimeoutMs,
   AUDIO_SPEAK_MAX_REQUEST_TIMEOUT_MS,
   AUDIO_SPEAK_MIN_REQUEST_TIMEOUT_MS,
   AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS,
@@ -422,6 +425,26 @@ describe('Hermes REST helpers', () => {
     expect(audioTranscribeRequestTimeoutMs('data:audio/webm;base64,AA==')).toBe(AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS)
     expect(audioTranscribeRequestTimeoutMs('x'.repeat(3_000_000))).toBe(300_000)
     expect(audioTranscribeRequestTimeoutMs('x'.repeat(9_000_000))).toBe(AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS)
+  })
+
+  it('bounds attach byte-upload timeouts by payload length', () => {
+    expect(attachUploadRequestTimeoutMs('data:text/plain;base64,aGVsbG8=')).toBe(
+      ATTACH_UPLOAD_MIN_REQUEST_TIMEOUT_MS
+    )
+    expect(attachUploadRequestTimeoutMs('x'.repeat(9_000_000))).toBe(900_000)
+    expect(attachUploadRequestTimeoutMs('x'.repeat(60_000_000))).toBe(ATTACH_UPLOAD_MAX_REQUEST_TIMEOUT_MS)
+  })
+
+  it('budgets a 12 MB attachment far above the generic 30s request default', () => {
+    // The regression: a 12 MiB zip base64-encodes to 4/3 its size, and bounding
+    // that upload by the 30s gateway default failed every attach with "request
+    // timed out after 30s: file.attach" before the bytes could cross an
+    // intercontinental link. Guard the floor this fix established.
+    const base64Chars = Math.ceil((12 * 1024 * 1024) / 3) * 4
+
+    expect(base64Chars).toBe(16_777_216)
+    expect(attachUploadRequestTimeoutMs('x'.repeat(base64Chars))).toBe(1_677_722)
+    expect(attachUploadRequestTimeoutMs('x'.repeat(base64Chars))).toBeGreaterThan(30_000)
   })
 
   it('uses an extended timeout for blocking transcription', async () => {

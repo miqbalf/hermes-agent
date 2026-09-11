@@ -409,8 +409,11 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
       const remote = $connection.get()?.mode === 'remote'
 
-      const requestGateway = <T,>(method: string, params?: Record<string, unknown>) =>
-        gateway.request<T>(method, params)
+      // timeoutMs must be forwarded: uploadComposerAttachment opts a byte
+      // upload into a payload-scaled budget, and dropping the argument here
+      // would silently pin this drop path back to the 30s default.
+      const requestGateway = <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number) =>
+        gateway.request<T>(method, params, timeoutMs)
 
       const refs: InlineRefInput[] = []
 

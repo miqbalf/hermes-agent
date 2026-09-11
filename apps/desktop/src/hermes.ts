@@ -126,6 +126,28 @@ export function audioTranscribeRequestTimeoutMs(dataUrl: string): number {
   return Math.min(AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS, estimated)
 }
 
+export const ATTACH_UPLOAD_MIN_REQUEST_TIMEOUT_MS = 180_000
+export const ATTACH_UPLOAD_MAX_REQUEST_TIMEOUT_MS = 1_800_000
+// A remote/cross-filesystem attach ships the file's bytes as a base64 data URL
+// inside ONE JSON-RPC frame, so the payload string length tracks file size
+// (base64 inflates 4/3, i.e. a 12 MB file is ~16.8M chars). Bounding that by
+// the generic 30s default made every multi-MB attach fail with "request timed
+// out after 30s: file.attach" long before the transfer could finish — a 16.8M
+// char payload needs ~4.5 Mbit/s held end-to-end to fit in 30s, which no
+// intercontinental link reliably does. Scale with payload like the transcribe
+// budget above (same 0.1ms/char basis) so small files stay at the floor.
+// Path-only attaches send no bytes and keep the default.
+const ATTACH_UPLOAD_TIMEOUT_MS_PER_CHAR = 0.1
+
+export function attachUploadRequestTimeoutMs(payload: string): number {
+  const estimated = Math.max(
+    ATTACH_UPLOAD_MIN_REQUEST_TIMEOUT_MS,
+    Math.ceil(String(payload || '').length * ATTACH_UPLOAD_TIMEOUT_MS_PER_CHAR)
+  )
+
+  return Math.min(ATTACH_UPLOAD_MAX_REQUEST_TIMEOUT_MS, estimated)
+}
+
 export type {
   ActionResponse,
   ActionStatusResponse,
