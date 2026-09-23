@@ -181,7 +181,13 @@ async def _lifespan(app: "FastAPI"):
     # contended state.db migration, so keep it off the pre-yield path: Group
     # Chat must degrade on its own rather than block every Desktop feature.
     from tui_gateway import methods_groups as _hosted_groups
-    import tui_gateway.server  # noqa: F401
+    import tui_gateway.server as _tui_server
+
+    # This process has no stdio JSON-RPC peer: fd 1 is the machine-sentinel channel
+    # the Desktop parses for READY (backend-ready.ts). Aim the gateway's stdio fallback
+    # sink at stderr so client-less broadcasts (setup.ready before the first WS
+    # connects) stop landing on stdout ahead of the sentinel.
+    _tui_server._real_stdout = sys.stderr
 
     hosted_room_start_cancel = threading.Event()
 
