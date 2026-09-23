@@ -11,6 +11,7 @@ import importlib
 import inspect
 import logging
 import os
+import sys
 import threading
 import tomllib
 import uuid
@@ -177,8 +178,15 @@ def _load_segments_config() -> dict[str, Any]:
     on_compaction = False
     max_turns = 0
     try:
-        from gateway.run import _load_gateway_config  # late import
-        telemetry = (_load_gateway_config().get("gateway") or {}).get("telemetry") or {}
+        gateway_run = sys.modules.get("gateway.run")
+        if gateway_run is not None:  # gateway host: its profile-aware loader
+            cfg = gateway_run._load_gateway_config()
+        else:
+            # Never IMPORT gateway.run from a non-gateway host: its import-time env setup
+            # (TERMINAL_CWD := home, ...) rebinds `hermes -z` to $HOME (#95577).
+            from hermes_cli.config_effective import load_user_config_effective
+            cfg = load_user_config_effective(get_hermes_home() / "config.yaml")
+        telemetry = (cfg.get("gateway") or {}).get("telemetry") or {}
         segments = telemetry.get("session_segments") or {}
         on_compaction = bool(segments.get("on_compaction", False))
         try:
