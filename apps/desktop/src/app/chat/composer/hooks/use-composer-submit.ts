@@ -101,19 +101,22 @@ export function useComposerSubmit({
   }
 
   // External "submit this prompt" requests (e.g. the review pane's agent-ship
-  // button) route through the same send path. A ref keeps the listener stable
-  // while always calling the latest dispatchSubmit closure.
+  // button, or an option chip inside the transcript) route through the same
+  // send path. Each composer answers only its own scope target ('main' | a
+  // session tile), so a request resolved to the visible surface lands in the
+  // chat that's actually on screen. A ref keeps the listener stable while
+  // always calling the latest dispatchSubmit closure.
   const dispatchSubmitRef = useRef(dispatchSubmit)
   dispatchSubmitRef.current = dispatchSubmit
 
   useEffect(
     () =>
       onComposerSubmitRequest(({ target, text }) => {
-        if (target === 'main' && !inputDisabled) {
+        if (target === scope.target && !inputDisabled) {
           dispatchSubmitRef.current(text)
         }
       }),
-    [inputDisabled]
+    [inputDisabled, scope.target]
   )
 
   const submitDraft = () => {

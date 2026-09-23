@@ -16,6 +16,7 @@ import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlig
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { detectArtifact } from '@/lib/artifact-detect'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
+import { isHermesOptionsLanguage, parseHermesOptions } from '@/lib/hermes-options'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
@@ -37,6 +38,7 @@ import { cn } from '@/lib/utils'
 import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
 import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
+import { HermesOptions } from './hermes-options'
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
 // plugin is stateless beyond its internal cache so re-creating per-render
@@ -569,9 +571,19 @@ function MarkdownTextSurface({
         img: MarkdownImage,
         // ```mermaid / ```svg fences route to their lazy renderers; substantial
         // html/svg/code fences promote to an artifact card that opens in the
-        // right rail; every other language falls back to the Shiki-highlighted
-        // code block.
+        // right rail; ```hermes-options fences render as clickable option
+        // chips (falling through to the plain code block when malformed, so
+        // the payload is never swallowed); every other language falls back to
+        // the Shiki-highlighted code block.
         SyntaxHighlighter: (props: SyntaxHighlighterProps) => {
+          if (isHermesOptionsLanguage(props.language)) {
+            const hermesOptions = parseHermesOptions(props.code)
+
+            if (hermesOptions) {
+              return <HermesOptions payload={hermesOptions} />
+            }
+          }
+
           const artifact = disableArtifacts ? null : detectArtifact(props.language, props.code)
 
           if (artifact) {
