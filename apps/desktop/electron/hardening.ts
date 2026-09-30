@@ -17,6 +17,10 @@ const DATA_URL_READ_MAX_MAX_MB = 4096
 // after base64 + framing. Preview stays on the Settings-configurable path.
 const ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES = 256 * 1024 * 1024
 const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
+// Chunked remote attach streams 48 MiB HTTP chunks; this is the total file
+// ceiling for that path (server-side reassembly enforces the same value via
+// HERMES_UPLOAD_MAX_TOTAL_BYTES, default 500 MiB).
+const CHUNKED_UPLOAD_MAX_TOTAL_BYTES = 500 * 1024 * 1024
 
 function clampDataUrlReadMaxMb(value) {
   const parsed = Number(value)
@@ -348,6 +352,7 @@ async function readFileDataUrlForIpc(
 
 export {
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
+  CHUNKED_UPLOAD_MAX_TOTAL_BYTES,
   clampDataUrlReadMaxMb,
   DATA_URL_READ_DEFAULT_MAX_MB,
   DATA_URL_READ_MAX_MAX_MB,

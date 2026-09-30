@@ -123,6 +123,7 @@ import {
 } from './git-worktree-ops'
 import {
   ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
+  CHUNKED_UPLOAD_MAX_TOTAL_BYTES,
   clampDataUrlReadMaxMb,
   DATA_URL_READ_DEFAULT_MAX_MB,
   dataUrlReadMaxBytesFromMb,
@@ -10867,10 +10868,10 @@ ipcMain.handle('hermes:readFileDataUrlForAttach', async (_event, filePath) => {
 // stream a large file to the gateway as sub-100MB HTTP chunks (Cloudflare
 // Free caps request bodies at ~100 MB even through tunnels). Chunk size is
 // half the single-shot attach cap so a base64 chunk plus JSON framing stays
-// well under the gateway's per-request limit; the 2 GiB total ceiling keeps
-// the upload id / index space and renderer math sane.
+// well under the gateway's per-request limit; the total ceiling matches the
+// server-side HERMES_UPLOAD_MAX_TOTAL_BYTES default (500 MiB).
 const ATTACH_CHUNK_MAX_BYTES = 48 * 1024 * 1024
-const ATTACH_CHUNK_FILE_MAX_BYTES = 2 * 1024 * 1024 * 1024
+const ATTACH_CHUNK_FILE_MAX_BYTES = CHUNKED_UPLOAD_MAX_TOTAL_BYTES
 
 ipcMain.handle('hermes:readFileChunkForAttach', async (_event, filePath, offset, length) => {
   const { resolvedPath, stat } = await resolveReadableFileForIpc(filePath, {
