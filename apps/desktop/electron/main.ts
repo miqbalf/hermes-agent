@@ -10863,6 +10863,45 @@ ipcMain.handle('hermes:readFileDataUrlForAttach', async (_event, filePath) => {
   })
 })
 
+// Chunked remote attach: reads exactly one byte range so the renderer can
+// stream a large file to the gateway as sub-100MB HTTP chunks (Cloudflare
+// Free caps request bodies at ~100 MB even through tunnels). Chunk size is
+// half the single-shot attach cap so a base64 chunk plus JSON framing stays
+// well under the gateway's per-request limit; the 2 GiB total ceiling keeps
+// the upload id / index space and renderer math sane.
+const ATTACH_CHUNK_MAX_BYTES = 48 * 1024 * 1024
+const ATTACH_CHUNK_FILE_MAX_BYTES = 2 * 1024 * 1024 * 1024
+
+ipcMain.handle('hermes:readFileChunkForAttach', async (_event, filePath, offset, length) => {
+  const { resolvedPath, stat } = await resolveReadableFileForIpc(filePath, {
+    maxBytes: ATTACH_CHUNK_FILE_MAX_BYTES,
+    purpose: 'Attachment upload'
+  })
+
+  const start = Number(offset)
+  const chunkLength = Number(length)
+
+  if (!Number.isInteger(start) || start < 0 || start > stat.size || !Number.isInteger(chunkLength) || chunkLength < 1 || chunkLength > ATTACH_CHUNK_MAX_BYTES) {
+    throw new Error(`Attachment upload failed: invalid chunk range (max ${ATTACH_CHUNK_MAX_BYTES} bytes per chunk).`)
+  }
+
+  const handle = await fs.promises.open(resolvedPath, 'r')
+
+  try {
+    const bytesToRead = Math.min(chunkLength, stat.size - start)
+    const buffer = Buffer.alloc(bytesToRead)
+    const { bytesRead } = await handle.read(buffer, 0, bytesToRead, start)
+
+    return {
+      data_base64: buffer.subarray(0, bytesRead).toString('base64'),
+      total_size: stat.size,
+      mime_type: mimeTypeForPath(resolvedPath)
+    }
+  } finally {
+    await handle.close()
+  }
+})
+
 ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
   const { resolvedPath, stat } = await resolveReadableFileForIpc(filePath, {
     maxBytes: TEXT_PREVIEW_SOURCE_MAX_BYTES,

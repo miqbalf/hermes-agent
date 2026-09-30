@@ -148,6 +148,19 @@ export function attachUploadRequestTimeoutMs(payload: string): number {
   return Math.min(ATTACH_UPLOAD_MAX_REQUEST_TIMEOUT_MS, estimated)
 }
 
+// Chunked remote attach (uploads_tmp on the gateway): files above this size
+// are streamed as /api/uploads/chunk + /api/uploads/complete instead of one
+// base64 data-URL JSON-RPC frame. 64 MiB sits under the 100 MB HTTP
+// request-body cap Cloudflare Free enforces even through tunnels, so the
+// single-shot WS path keeps working below it; the WS frame cap (~256 MiB raw)
+// covers the window between the two.
+export const CHUNKED_UPLOAD_THRESHOLD_BYTES = 64 * 1024 * 1024
+// Half the single-shot attach cap: a base64 chunk plus JSON framing stays
+// well under the gateway's per-request limit, and 48 MiB * 9999 chunks is
+// far past the 2 GiB total file cap the IPC reader enforces.
+export const CHUNKED_UPLOAD_CHUNK_BYTES = 48 * 1024 * 1024
+export const CHUNKED_UPLOAD_CHUNK_TIMEOUT_MS = 180_000
+
 export type {
   ActionResponse,
   ActionStatusResponse,

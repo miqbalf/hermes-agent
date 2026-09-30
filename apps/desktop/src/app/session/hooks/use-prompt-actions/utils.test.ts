@@ -17,6 +17,7 @@ import {
   renderRpcResult,
   SessionRecoveryAborted,
   slashStatusText,
+  uploadFileViaChunks,
   visibleUserIndexAtOrdinal,
   visibleUserOrdinal,
   withSessionNotFoundResume
@@ -314,6 +315,90 @@ describe('readFileDataUrlForAttach', () => {
 
     await expect(readFileDataUrlForAttach('/tmp/note.txt')).resolves.toBe('data:text/plain;base64,YQ==')
     expect(previewReader).toHaveBeenCalledWith('/tmp/note.txt')
+  })
+})
+
+describe('uploadFileViaChunks', () => {
+  const PAYLOAD = 'abcdefghijklmnopqrstuvwxyz0123456789'
+
+  function stubDesktop(overrides: Record<string, unknown> = {}) {
+    const chunkReader = vi.fn(async (_path: string, offset: number, length: number) => ({
+      data_base64: Buffer.from(PAYLOAD.slice(offset, offset + length)).toString('base64'),
+      mime_type: 'text/plain',
+      total_size: PAYLOAD.length
+    }))
+
+    const api = vi.fn(async (request: { body?: Record<string, unknown>; path: string }) => {
+      if (request.path === '/api/uploads/complete') {
+        return { attached: true, bytes: PAYLOAD.length, path: '/tmp/gateway/attachments/f.txt', ref_text: '@file:f.txt', uploaded: true }
+      }
+
+      return { ok: true, received: 0 }
+    })
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { api, readFileChunkForAttach: chunkReader, ...overrides }
+    })
+
+    return { api, chunkReader }
+  }
+
+  it('uploads every chunk in order then completes with the session id', async () => {
+    const { api, chunkReader } = stubDesktop()
+
+    const result = await uploadFileViaChunks('/tmp/f.txt', { chunkBytes: 10, sessionId: 'sess1', totalSize: PAYLOAD.length })
+
+    expect(result.attached).toBe(true)
+    expect(result.ref_text).toBe('@file:f.txt')
+    expect(chunkReader).toHaveBeenCalledTimes(4)
+    expect(chunkReader.mock.calls.map(call => [call[1], call[2]])).toEqual([
+      [0, 10],
+      [10, 10],
+      [20, 10],
+      [30, 6]
+    ])
+
+    const bodies = api.mock.calls.map(call => call[0].body as Record<string, unknown>)
+
+    expect(bodies.slice(0, 3).map(body => body.index)).toEqual([0, 1, 2])
+    expect(new Set(bodies.slice(0, 4).map(body => body.upload_id)).size).toBe(1)
+    expect(bodies[4]).toMatchObject({ filename: 'f.txt', session_id: 'sess1', total_chunks: 4 })
+  })
+
+  it('throws when a chunk read comes back empty', async () => {
+    const { api } = stubDesktop({
+      readFileChunkForAttach: vi.fn(async () => ({ data_base64: '', mime_type: 'text/plain', total_size: PAYLOAD.length }))
+    })
+
+    await expect(uploadFileViaChunks('/tmp/f.txt', { chunkBytes: 10, totalSize: PAYLOAD.length })).rejects.toThrow(
+      'Could not read /tmp/f.txt'
+    )
+    expect(api).not.toHaveBeenCalled()
+  })
+
+  it('throws when a chunk POST fails and never completes', async () => {
+    const api = vi.fn(async (request: { path: string }) => {
+      if (request.path === '/api/uploads/chunk') {
+        throw new Error('gateway 413')
+      }
+
+      return { attached: true, ref_text: '@file:f.txt' }
+    })
+
+    const { chunkReader } = stubDesktop({ api })
+
+    await expect(uploadFileViaChunks('/tmp/f.txt', { chunkBytes: 10, totalSize: PAYLOAD.length })).rejects.toThrow('gateway 413')
+    expect(chunkReader).toHaveBeenCalledTimes(1)
+    expect(api).toHaveBeenCalledTimes(1)
+  })
+
+  it('throws when the bridge lacks the chunked reader', async () => {
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: {} })
+
+    await expect(uploadFileViaChunks('/tmp/f.txt', { totalSize: PAYLOAD.length })).rejects.toThrow(
+      'not supported by this desktop build'
+    )
   })
 })
 

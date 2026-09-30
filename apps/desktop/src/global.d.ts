@@ -149,6 +149,14 @@ declare global {
       readFileDataUrl: (filePath: string) => Promise<string>
       /** Remote non-image attach: higher dedicated cap than preview/Settings default. */
       readFileDataUrlForAttach?: (filePath: string) => Promise<string>
+      /** Chunked remote attach: read one byte range (base64) so large files can
+       *  stream to the gateway as sub-100MB HTTP chunks. Optional: older Electron
+       *  shells predate it and fall back to the single-shot attach reader. */
+      readFileChunkForAttach?: (
+        filePath: string,
+        offset: number,
+        length: number
+      ) => Promise<{ data_base64: string; mime_type: string; total_size: number }>
       /** Settings → Chat: max size for local files loaded as data URLs (attach/preview). */
       dataUrlReadMax?: {
         get: () => Promise<{ defaultMaxMb: number; maxBytes: number; maxMb: number }>

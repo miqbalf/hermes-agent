@@ -1,5 +1,6 @@
 import type { AppendMessage } from '@assistant-ui/react'
 
+import { CHUNKED_UPLOAD_CHUNK_BYTES, CHUNKED_UPLOAD_CHUNK_TIMEOUT_MS, getApiRequestProfile } from '@/hermes'
 import { translateNow, type Translations } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { type CommandsCatalogLike, filterDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
@@ -7,6 +8,15 @@ import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import type { ComposerAttachment } from '@/store/composer'
 
 export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
+
+// Every desktop REST call is profile-routed by Electron main from
+// request.profile; mirror the hermes.ts api convention so a chunked upload
+// lands in the same backend the surrounding session calls use.
+function apiRequestProfile(): { profile?: string } {
+  const profile = getApiRequestProfile()
+
+  return profile ? { profile } : {}
+}
 
 export function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -302,6 +312,75 @@ export async function readFileDataUrlForAttach(filePath: string): Promise<string
   const dataUrl = await reader(filePath)
 
   return dataUrl || null
+}
+
+export interface ChunkedUploadResult {
+  attached?: boolean
+  bytes?: number
+  message?: string
+  name?: string
+  path?: string
+  ref_path?: string
+  ref_text?: string
+  uploaded?: boolean
+}
+
+// Stream a large remote file to the gateway as sub-100MB HTTP chunks and
+// reassemble it there (Cloudflare Free caps request bodies at ~100 MB even
+// through tunnels, so one big data-URL WS frame cannot cross). Returns the
+// same file.attach-shaped result the single-shot path consumes. Throws on the
+// first failed chunk or the complete call — callers surface it like a
+// file.attach failure; there is no silent fallback to the single-shot path
+// (it would fail again past its own cap).
+export async function uploadFileViaChunks(
+  filePath: string,
+  options: {
+    chunkBytes?: number
+    sessionId?: null | string
+    timeoutMs?: number
+    totalSize: number
+  }
+): Promise<ChunkedUploadResult> {
+  const reader = window.hermesDesktop?.readFileChunkForAttach
+
+  if (!reader || !window.hermesDesktop?.api) {
+    throw new Error('Chunked upload is not supported by this desktop build.')
+  }
+
+  const chunkBytes = options.chunkBytes ?? CHUNKED_UPLOAD_CHUNK_BYTES
+  const timeoutMs = options.timeoutMs ?? CHUNKED_UPLOAD_CHUNK_TIMEOUT_MS
+  const uploadId = crypto.randomUUID()
+  const totalChunks = Math.max(1, Math.ceil(options.totalSize / chunkBytes))
+
+  for (let index = 0; index < totalChunks; index += 1) {
+    const offset = index * chunkBytes
+    const chunk = await reader(filePath, offset, Math.min(chunkBytes, options.totalSize - offset))
+
+    if (!chunk || !chunk.data_base64) {
+      throw new Error(`Could not read ${filePath}`)
+    }
+
+    await window.hermesDesktop.api<ChunkedUploadResult>({
+      path: '/api/uploads/chunk',
+      method: 'POST',
+      body: { data_base64: chunk.data_base64, index, upload_id: uploadId },
+      timeoutMs,
+      ...apiRequestProfile()
+    })
+  }
+
+  return window.hermesDesktop.api<ChunkedUploadResult>({
+    path: '/api/uploads/complete',
+    method: 'POST',
+    body: {
+      filename: filePath.split(/[\\/]/).filter(Boolean).pop() || 'attachment',
+      session_id: options.sessionId ?? null,
+      total_chunks: totalChunks,
+      upload_id: uploadId
+    },
+    timeoutMs,
+    ...apiRequestProfile()
+  })
 }
 
 // The attach/preview IPC base64-loads the whole file into memory and rejects

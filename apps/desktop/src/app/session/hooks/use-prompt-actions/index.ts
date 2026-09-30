@@ -2,7 +2,7 @@ import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
-import { attachUploadRequestTimeoutMs, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS, transcribeAudio } from '@/hermes'
+import { attachUploadRequestTimeoutMs, CHUNKED_UPLOAD_THRESHOLD_BYTES, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS, transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { stripAnsi } from '@/lib/ansi'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
@@ -70,6 +70,7 @@ import {
   readFileDataUrlForAttach,
   readImageForRemoteAttach,
   type SubmitTextOptions,
+  uploadFileViaChunks,
   withSessionNotFoundResume
 } from './utils'
 
@@ -133,19 +134,34 @@ export async function uploadComposerAttachment(
   // id would double the disk/IPC cost of every recovered attach.
   let imagePayload: Awaited<ReturnType<typeof readImageForRemoteAttach>> | null = null
   let fileDataUrl: null | string = null
+  // Large remote files cross as sub-100MB HTTP chunks instead of one base64
+  // WS frame (Cloudflare caps HTTP bodies ~100 MB). Probed with a 1-byte read
+  // so the size check doesn't load the file; null → single-shot path.
+  let chunkedTotalSize: number | null = null
+  let chunkedResult: Awaited<ReturnType<typeof uploadFileViaChunks>> | null = null
 
   if (uploadBytes) {
     try {
-      if (attachment.kind === 'image') {
-        imagePayload = await readImageForRemoteAttach(path)
-      } else {
-        fileDataUrl = await readFileDataUrlForAttach(path)
+      if (attachment.kind === 'file' && remote && window.hermesDesktop?.readFileChunkForAttach) {
+        const probe = await window.hermesDesktop.readFileChunkForAttach(path, 0, 1)
+
+        if (probe && probe.total_size > CHUNKED_UPLOAD_THRESHOLD_BYTES) {
+          chunkedTotalSize = probe.total_size
+        }
+      }
+
+      if (chunkedTotalSize === null) {
+        if (attachment.kind === 'image') {
+          imagePayload = await readImageForRemoteAttach(path)
+        } else {
+          fileDataUrl = await readFileDataUrlForAttach(path)
+        }
       }
     } catch (err) {
       throw friendlyRemoteAttachError(err, label)
     }
 
-    if (attachment.kind === 'image' ? !imagePayload : !fileDataUrl) {
+    if (chunkedTotalSize === null && (attachment.kind === 'image' ? !imagePayload : !fileDataUrl)) {
       throw new Error(`Could not read ${label}`)
     }
   }
@@ -178,6 +194,28 @@ export async function uploadComposerAttachment(
         attachedSessionId: liveSessionId,
         label: attachedPath ? pathLabel(attachedPath) : attachment.label,
         path: attachedPath,
+        uploadState: undefined
+      }
+    }
+
+    if (chunkedTotalSize !== null) {
+      // Memoized so a stale-session recovery retry after a SUCCESSFUL upload
+      // doesn't re-run complete (the temp chunks are deleted server-side and
+      // would 422). A failed upload leaves this null, so a retry re-sends
+      // chunks — same-index overwrite is allowed server-side.
+      chunkedResult ??= await uploadFileViaChunks(path, {
+        sessionId: liveSessionId,
+        totalSize: chunkedTotalSize
+      })
+
+      if (!chunkedResult.attached || !chunkedResult.ref_text) {
+        throw new Error(chunkedResult.message || `Could not attach ${label}`)
+      }
+
+      return {
+        ...attachment,
+        attachedSessionId: liveSessionId,
+        refText: chunkedResult.ref_text,
         uploadState: undefined
       }
     }
