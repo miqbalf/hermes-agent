@@ -36,6 +36,29 @@ function electronBuilderCli() {
   return path.join(path.dirname(pkgJson), rel)
 }
 
+// macOS TCC binds privacy grants (Documents, Desktop, ...) to the designated
+// requirement. Ad-hoc builds pin it to the cdhash, so every rebuild loses the
+// grant. A stable local identity makes the requirement survive rebuilds.
+const LOCAL_MAC_IDENTITY = process.env.HERMES_MAC_SIGN_IDENTITY || "Hermes Local Signing"
+
+function localMacIdentityEnv() {
+  if (process.platform !== "darwin") return {}
+  if (process.env.CSC_NAME || process.env.CSC_LINK) return {}
+  if (process.env.CSC_IDENTITY_AUTO_DISCOVERY === "false") return {}
+  const res = spawnSync("security", ["find-identity", "-p", "codesigning"], { encoding: "utf8" })
+  const lines = (res.stdout || "").split("\n").filter((l) => l.includes(`"${LOCAL_MAC_IDENTITY}"`))
+  if (lines.length === 0) return {}
+  if (lines.every((l) => l.includes("CSSMERR_TP_NOT_TRUSTED"))) {
+    console.warn(
+      `[run-electron-builder] "${LOCAL_MAC_IDENTITY}" is in the keychain but not trusted for ` +
+        "code signing; electron-builder will skip it and the build will be ad-hoc signed."
+    )
+    return {}
+  }
+  console.log(`[run-electron-builder] signing with local identity "${LOCAL_MAC_IDENTITY}"`)
+  return { CSC_NAME: LOCAL_MAC_IDENTITY }
+}
+
 const dist = electronDistDir()
 // Local `hermes desktop` builds only ever package (--dir or dist), never
 // publish a GitHub release — no CI workflow drives this script. But the npm
@@ -59,6 +82,7 @@ args.push(...process.argv.slice(2))
 
 const result = spawnSync(process.execPath, [electronBuilderCli(), ...args], {
   stdio: "inherit",
+  env: { ...process.env, ...localMacIdentityEnv() },
 })
 if (result.error) {
   console.error(`[run-electron-builder] spawn failed: ${result.error.message}`)
